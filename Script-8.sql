@@ -1,24 +1,17 @@
+CREATE TABLE users (
+    id BIGINT PRIMARY KEY, -- ID пользователя из Telegram
+    username TEXT
+);
+
 CREATE TABLE words (
     id SERIAL PRIMARY KEY,
-    english_word VARCHAR(255) NOT NULL,
-    russian_word VARCHAR(255) NOT NULL,
-    user_id BIGINT
+    english_word TEXT NOT NULL,
+    russian_word TEXT NOT NULL,
+    user_id BIGINT REFERENCES users(id) ON DELETE CASCADE -- ID пользователя или NULL для общих слов
 );
 
-CREATE TABLE users (
-    id BIGINT PRIMARY KEY,
-    username VARCHAR(255)
+CREATE TABLE user_words (
+    user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+    word_id INTEGER REFERENCES words(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, word_id)
 );
-
-
-INSERT INTO words (english_word, russian_word, user_id) VALUES
-('Red', 'Красный', NULL),
-('Blue', 'Синий', NULL),
-('Green', 'Зелёный', NULL),
-('Yellow', 'Жёлтый', NULL),
-('Black', 'Чёрный', NULL),
-('White', 'Белый', NULL),
-('I', 'Я', NULL),
-('You', 'Ты', NULL),
-('We', 'Мы', NULL),
-('They', 'Они', NULL);

@@ -1,20 +1,33 @@
-import os
 import random
-import psycopg2
 from telebot import types, TeleBot, custom_filters
 from telebot.storage import StateMemoryStorage
 from telebot.handler_backends import State, StatesGroup
+import psycopg2
 from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 print('Start telegram bot...')
 
-load_dotenv('tg_tok.env')
-TOKEN = os.environ['TOKEN']
-
-
 state_storage = StateMemoryStorage()
-token_bot = 'YOUR_BOT_TOKEN'
-bot = TeleBot(TOKEN, state_storage=state_storage)
+token_bot = os.getenv('TELEGRAM_TOKEN')
+bot = TeleBot(token_bot, state_storage=state_storage)
+
+db_name = os.getenv('DB_NAME')
+db_user = os.getenv('DB_USER')
+db_password = os.getenv('DB_PASSWORD')
+db_host = os.getenv('DB_HOST')
+db_port = os.getenv('DB_PORT')
+
+conn = psycopg2.connect(
+    dbname=db_name,
+    user=db_user,
+    password=db_password,
+    host=db_host,
+    port=db_port
+)
+cursor = conn.cursor()
 
 class Command:
     ADD_WORD = 'Добавить слово ➕'
@@ -26,47 +39,56 @@ class MyStates(StatesGroup):
     translate_word = State()
     another_words = State()
 
-
-# Подключение к базе данных
-conn = psycopg2.connect(
-    dbname='translate',
-    user='postgres',
-    password=os.environ['password_db'],
-    host='localhost',
-    port='5432'
-)
-cursor = conn.cursor()
+def add_user_to_db(user_id, username):
+    cursor.execute("INSERT INTO users (id, username) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING", (user_id, username))
+    conn.commit()
 
 def add_word_to_db(user_id, english_word, russian_word):
-    cursor.execute("INSERT INTO words (english_word, russian_word, user_id) VALUES (%s, %s, %s)",
+    cursor.execute("INSERT INTO words (english_word, russian_word, user_id) VALUES (%s, %s, %s) RETURNING id", 
                    (english_word, russian_word, user_id))
+    word_id = cursor.fetchone()[0]
+    cursor.execute("INSERT INTO user_words (user_id, word_id) VALUES (%s, %s)", (user_id, word_id))
     conn.commit()
 
 def delete_word_from_db(user_id, english_word):
-    cursor.execute("DELETE FROM words WHERE user_id = %s AND english_word = %s", (user_id, english_word))
+    cursor.execute("""
+        DELETE FROM words 
+        WHERE id = (
+            SELECT w.id FROM words w 
+            JOIN user_words uw ON w.id = uw.word_id 
+            WHERE uw.user_id = %s AND w.english_word = %s
+        )
+    """, (user_id, english_word))
     conn.commit()
 
-def get_random_word(user_id):
-    cursor.execute("SELECT english_word, russian_word FROM words WHERE user_id IS NULL OR user_id = %s ORDER BY RANDOM() LIMIT 1", (user_id,))
-    return cursor.fetchone()
-
-def get_random_words(user_id, exclude_word):
-    cursor.execute("SELECT english_word FROM words WHERE (user_id IS NULL OR user_id = %s) AND english_word != %s ORDER BY RANDOM() LIMIT 3", (user_id, exclude_word))
-    return [row[0] for row in cursor.fetchall()]
-
+def get_random_words(user_id, limit=4):
+    cursor.execute("""
+        SELECT english_word, russian_word 
+        FROM (
+            SELECT w.english_word, w.russian_word 
+            FROM words w 
+            LEFT JOIN user_words uw ON w.id = uw.word_id 
+            WHERE w.user_id IS NULL OR uw.user_id = %s
+        ) AS user_words
+        ORDER BY RANDOM()
+        LIMIT %s
+    """, (user_id, limit))
+    return cursor.fetchall()
 
 @bot.message_handler(commands=['start'])
 def start_message(message):
     cid = message.chat.id
-    bot.send_message(cid, "Hello, stranger, let study English...")
+    add_user_to_db(cid, message.chat.username)
+    bot.send_message(cid, "Hello, stranger, let's study English...")
+    create_cards(message)
 
 @bot.message_handler(commands=['cards'])
 def create_cards(message):
     cid = message.chat.id
-    word_pair = get_random_word(cid)
-    if word_pair:
-        target_word, translate = word_pair
-        other_words = get_random_words(cid, target_word)
+    words = get_random_words(cid)
+    if words:
+        target_word, translate = words.pop()
+        other_words = [word[0] for word in words]
         options = [target_word] + other_words
         random.shuffle(options)
         
@@ -124,7 +146,6 @@ def remove_word(message):
 def message_reply(message):
     text = message.text
     cid = message.chat.id
-    markup = types.ReplyKeyboardMarkup(row_width=2)
     with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
         target_word = data['target_word']
         translate_word = data['translate_word']
@@ -136,4 +157,6 @@ def message_reply(message):
             create_cards(message)
 
 bot.add_custom_filter(custom_filters.StateFilter(bot))
-bot.infinity_polling(skip_pending=True)
+
+if __name__ == '__main__':
+    bot.infinity_polling(skip_pending=True)

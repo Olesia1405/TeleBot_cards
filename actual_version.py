@@ -37,20 +37,27 @@ class Command:
 class MyStates(StatesGroup):
     target_word = State()
     translate_word = State()
-    another_words = State()
+    add_word_state = State()  # Новое состояние для добавления слова
+    delete_word_state = State()  # Новое состояние для удаления слова
 
 def add_user_to_db(user_id, username):
     cursor.execute("INSERT INTO users (id, username) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING", (user_id, username))
     conn.commit()
 
 def add_word_to_db(user_id, english_word, russian_word):
-    cursor.execute("INSERT INTO words (english_word, russian_word, user_id) VALUES (%s, %s, %s) RETURNING id", 
-                   (english_word, russian_word, user_id))
-    word_id = cursor.fetchone()[0]
-    cursor.execute("INSERT INTO user_words (user_id, word_id) VALUES (%s, %s)", (user_id, word_id))
-    conn.commit()
+    english_word = english_word.lower()
+    cursor.execute("SELECT id FROM words WHERE english_word = %s AND (user_id IS NULL OR user_id = %s)", (english_word, user_id))
+    if cursor.fetchone() is None:
+        cursor.execute("INSERT INTO words (english_word, russian_word, user_id) VALUES (%s, %s, %s) RETURNING id", 
+                       (english_word, russian_word.lower(), user_id))
+        word_id = cursor.fetchone()[0]
+        cursor.execute("INSERT INTO user_words (user_id, word_id) VALUES (%s, %s)", (user_id, word_id))
+        conn.commit()
+    else:
+        bot.send_message(user_id, f"Слово '{english_word}' уже существует.")
 
 def delete_word_from_db(user_id, english_word):
+    english_word = english_word.lower()
     cursor.execute("""
         DELETE FROM words 
         WHERE id = (
@@ -116,15 +123,15 @@ def next_cards(message):
 @bot.message_handler(func=lambda message: message.text == Command.ADD_WORD)
 def add_word(message):
     bot.send_message(message.chat.id, "Send the word in English and its translation in Russian separated by a comma.")
-    bot.set_state(message.from_user.id, MyStates.another_words, message.chat.id)
+    bot.set_state(message.from_user.id, MyStates.add_word_state, message.chat.id)
 
-@bot.message_handler(state=MyStates.another_words)
+@bot.message_handler(state=MyStates.add_word_state)
 def save_word(message):
     cid = message.chat.id
     try:
         english_word, russian_word = map(str.strip, message.text.split(','))
         add_word_to_db(cid, english_word, russian_word)
-        bot.send_message(cid, f"Word '{english_word}' with translation '{russian_word}' added.")
+        bot.send_message(cid, f"Word '{english_word.lower()}' with translation '{russian_word.lower()}' added.")
     except ValueError:
         bot.send_message(cid, "Invalid format. Please use 'English, Russian'.")
     bot.delete_state(message.from_user.id, cid)
@@ -132,19 +139,19 @@ def save_word(message):
 @bot.message_handler(func=lambda message: message.text == Command.DELETE_WORD)
 def delete_word(message):
     bot.send_message(message.chat.id, "Send the word in English you want to delete.")
-    bot.set_state(message.from_user.id, MyStates.another_words, message.chat.id)
+    bot.set_state(message.from_user.id, MyStates.delete_word_state, message.chat.id)
 
-@bot.message_handler(state=MyStates.another_words)
+@bot.message_handler(state=MyStates.delete_word_state)
 def remove_word(message):
     cid = message.chat.id
     english_word = message.text.strip()
     delete_word_from_db(cid, english_word)
-    bot.send_message(cid, f"Word '{english_word}' deleted.")
+    bot.send_message(cid, f"Word '{english_word.lower()}' deleted.")
     bot.delete_state(message.from_user.id, cid)
 
 @bot.message_handler(func=lambda message: True, content_types=['text'])
 def message_reply(message):
-    text = message.text
+    text = message.text.lower()
     cid = message.chat.id
     with bot.retrieve_data(message.from_user.id, message.chat.id) as data:
         target_word = data['target_word']
